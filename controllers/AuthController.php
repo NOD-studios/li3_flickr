@@ -1,7 +1,6 @@
 <?php
 namespace li3_flickr\controllers;
 
-use \lithium\net\http\Router;
 use \lithium\data\Connections;
 use \lithium\storage\Session;
 
@@ -10,15 +9,21 @@ class AuthController extends \lithium\action\Controller {
 	public $authError = '';
 
 	public function get_auth($permission = 'read', $redirect = null) {
-		if(!in_array('Flickr', Connections::get())) {
-			return false;
-		}
-		$Flickr = Connections::get('Flickr');
 		$validPermissions = array('read', 'write', 'delete');
-		$authUrl = $Flickr->getAuthUrl($params = array(
-			'perms' => in_array($permission, $validPermissions) ? $permission : 'read',
-			'extra' => $redirect ? $redirect : ($this->request->env('https') ? 'https://' : 'http://' ) . $this->request->env('http_host') . $this->request->env('base')
-		));
+		$connectionName = 'Flickr';
+		$baseUrl = ($this->request->env('https') ? 'https://' : 'http://' ) . $this->request->env('http_host') . $this->request->env('base');
+		$params = compact(array('permission', 'redirect', 'validPermissions', 'connectionName', 'baseUrl'));
+
+		$authUrl = $this->_filter(__METHOD__, $params, function($self, $params) {
+			if(!in_array($params['connectionName'], Connections::get())) {
+				return false;
+			}
+			$Flickr = Connections::get($params['connectionName']);
+			return $authUrl = $Flickr->getAuthUrl($params = array(
+				'perms' => in_array($params['permission'], $params['validPermissions']) ? $params['permission'] : 'read',
+				'extra' => empty($params['redirect']) ? $params['baseUrl'] : $params['redirect']
+			));
+		});
 		return $this->redirect($authUrl);
 	}
 
@@ -28,7 +33,6 @@ class AuthController extends \lithium\action\Controller {
 		$params = compact(array('frob', 'extra'));
 		$redirect = $this->_filter(__METHOD__, $params, function($self, $params) {
 			Session::write('Flickr.frob', $params['frob']);
-			$chain->next($self, $params, $chain);
 			return $params['extra'];
 		});
 		$this->redirect($redirect);
