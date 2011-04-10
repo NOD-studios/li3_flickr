@@ -6,19 +6,31 @@ use \lithium\storage\Session;
 
 class AuthController extends \lithium\action\Controller {
 
-	public $frobSession = 'Flickr.frob';
+	public static $frobSession = 'Flickr.frob';
+	public static $failRedirect = '/auth::failed';
+	public static $connectionName = 'Flickr';
+	public static $validPermissions = array('read', 'write', 'delete');
+	protected static $_Flickr = false;
+
+	protected function _init() {
+		if(self::$_Flickr === false) {
+			self::$_Flickr = Connections::get(self::$connectionName);
+		}
+		Session::config(array(
+			'default' => array('adapter' => 'Php')
+		));
+		parent::_init();
+	}
 
 	public function get_auth($permission = 'read', $redirect = null) {
-		$validPermissions = array('read', 'write', 'delete');
-		$connectionName = 'Flickr';
-		$params = compact(array('permission', 'redirect', 'validPermissions', 'connectionName', 'baseUrl'));
-		return $this->_filter(__METHOD__, $params, function($self, $params) {
-			if(!in_array($params['connectionName'], Connections::get())) {
+		$Flickr = self::$_Flickr;
+		$params = compact(array('permission', 'redirect'));
+		return $this->_filter(__METHOD__, $params, function($self, $params) use ($Flickr)  {
+			if(!in_array($self::$connectionName, Connections::get())) {
 				return false;
 			}
-			$Flickr = Connections::get($params['connectionName']);
 			$authUrl = $Flickr->getAuthUrl($params = array(
-				'perms' => in_array($params['permission'], $params['validPermissions']) ? $params['permission'] : 'read',
+				'perms' => in_array($params['permission'], $self::$validPermissions) ? $params['permission'] : 'read',
 				'extra' => empty($params['redirect']) ? ($self->request->env('https') ? 'https://' : 'http://' ) . $self->request->env('http_host') . $self->request->env('base') : $params['redirect']
 			));
 			return $self->redirect($authUrl);
@@ -26,17 +38,20 @@ class AuthController extends \lithium\action\Controller {
 	}
 
 	public function write_frob() {
-		$frob = !isset($this->request->query['frob']) ? '' : "/{$this->request->query['frob']}";
-		$extra = !isset($this->request->query['extra']) ? '' : $this->request->query['extra'];
+		$frob = empty($this->request->query['frob']) ? '' : "/{$this->request->query['frob']}";
+		$extra = empty($this->request->query['extra']) ? '' : $this->request->query['extra'];
+		$Flickr = self::$_Flickr;
 		$params = compact(array('frob', 'extra'));
-		return $this->_filter(__METHOD__, $params, function($self, $params) {
-			Session::write($self->frobSession, $params['frob']);
-			return $self->redirect($params['extra']);
+		return $this->_filter(__METHOD__, $params, function($self, $params) use ($Flickr) {
+			if(Session::write($self::$frobSession, $params['frob'])) {
+				return $self->redirect($params['extra']);
+			}
+			return $self->redirect($self::$failRedirect);
 		});
 	}
 
 	public static function check_frob() {
-		return Session::check($this->frobSession);
+		return Session::check(self::$frobSession);
 	}
 }
 ?>

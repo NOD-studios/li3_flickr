@@ -23,7 +23,9 @@ class Flickr extends \lithium\data\source\Http {
 	 *
 	 * @var array
 	 */
-	protected $_methods = array();
+	protected $_methods = array(
+
+	);
 
 	/**
 	 * Holds unserialized last Flickr response & error
