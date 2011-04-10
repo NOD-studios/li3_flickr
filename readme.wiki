@@ -1,6 +1,6 @@
 # li3_flickr
 
-Flickr API wrapper for Lithium PHP Framework as a HTTP datasource extension.
+Flickr API plugin for Lithium PHP Framework
 
 **Be aware, it's under construction at the moment.**
 

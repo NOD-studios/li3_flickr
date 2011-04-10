@@ -18,7 +18,7 @@ use lithium\action\Controller;
 class Flickr extends \lithium\data\source\Http {
 
 	/**
-	 * List of predined exceptional methods and their corresponding HTTP method and path. 
+	 * List of predined exceptional methods and their corresponding HTTP method and path.
 	 * You can pre(or after) define api methods in this variable, otherwise it'll be automaticly created and will be holded in this variable.
 	 *
 	 * @var array
@@ -100,7 +100,7 @@ class Flickr extends \lithium\data\source\Http {
 	}
 
 	/**
-	 * Makes flickr auth url for getting permission. 
+	 * Makes flickr auth url for getting permission.
 	 * You can override settings and permission (i.e: 'perms' => 'delete') level with passing $params argument, otherwise it'll use connection defaults.
 	 *
 	 * @access public
@@ -121,10 +121,10 @@ class Flickr extends \lithium\data\source\Http {
 	}
 
 	/**
-	 * Checks for errors at the end of service call. 
+	 * Checks for errors at the end of service call.
 	 * If it'll find error, putting them $this->last['error'] variable as array.
 	 * If permission is not enough to operate action, will return permission denied string.
-	 * 
+	 *
 	 * @access protected
 	 * @param mixed $response
 	 * @return mixed
@@ -148,7 +148,7 @@ class Flickr extends \lithium\data\source\Http {
 	/**
 	 * Setting service response format depending on $this->connection->_config['unserialize']
 	 * Avaible options are json, simplexml, rest, php serialize(recommended)
-	 * 
+	 *
 	 * @access protected
 	 * @return mixed
 	*/
@@ -175,33 +175,35 @@ class Flickr extends \lithium\data\source\Http {
 	/**
 	 * Converting service response format depending on $this->connection->_config['unserialize']
 	 * Avaible options are json, simplexml, rest, php serialize(recommended)
-	 * 
-	 * @access protected
+	 *
+	 * @access public
 	 * @param mixed $response
 	 * @return mixed
 	*/
-	protected function _filterResponse($response = false) {
-		switch($this->connection->_config['unserialize']) {
-			case 'json':
-				return json_decode($response);
-				break;
-			case 'simplexml':
-				return simplexml_load_string($response);
-				break;
-			case 'rest':
-				return $response;
-				break;
-			case 'php':
-				return unserialize($response);
-				break;
-			default:
-				return $response;
-		}
+	public function filterResponse($response = false) {
+		return $this->_filter(__METHOD__, $response, function($self, $response) {
+			switch($this->connection->_config['unserialize']) {
+				case 'json':
+					return json_decode($response);
+					break;
+				case 'simplexml':
+					return simplexml_load_string($response);
+					break;
+				case 'rest':
+					return $response;
+					break;
+				case 'php':
+					return unserialize($response);
+					break;
+				default:
+					return $response;
+			}
+		});
 	}
 
 	/**
 	 * Organizing and encoding request params
-	 * 
+	 *
 	 * @access protected
 	 * @param array $params
 	 * @return array $encoded_params
@@ -225,7 +227,7 @@ class Flickr extends \lithium\data\source\Http {
 
 	/**
 	 * Sets the service call method when it's not in $_methods variable.
-	 * 
+	 *
 	 * @access protected
 	 * @param array $params
 	 * @return array $encoded_params
@@ -248,21 +250,20 @@ class Flickr extends \lithium\data\source\Http {
 
 	/**
 	 * Controlling the hole api request and returns response.
-	 * 
+	 *
 	 * @access protected
 	 * @param array $params
 	 * @return array $encoded_params
 	*/
 	public function getResponse($method = null) {
-		if(!$method) { 
-			return false; 
+		if(!$method) {
+			return false;
 		}
-		
 		return $this->_filter(__METHOD__, $method, function($self, $method) {
-			$response = $this->last['unserialized'] = parent::__call($method, array());
-			$response = $this->_filterResponse($response);
+			$response = $self->last['unserialized'] = parent::__call($method, array());
+			$response = $self->_filterResponse($response);
 			if($this->_checkForErrors($response)) {
-				return $this->last['response'] = $response;
+				return $self->last['response'] = $response;
 			}
 			return false;
 		});
@@ -283,14 +284,16 @@ class Flickr extends \lithium\data\source\Http {
 			return $this->invokeMethod($this, $method);
 		}
 
-		$params = !empty($params[0]) ? $params[0] : array();
-		$params = !is_array($params) ? array($params) : $params;
+		return $this->_filter(__METHOD__, $params, function($self, $params) use($method) {
+			$params = !empty($params[0]) ? $params[0] : array();
+			$params = !is_array($params) ? array($params) : $params;
 
-		if(!in_array($method, $this->_methods)) {
-			$this->_setMethod($method, $params);
-		}
+			if(!in_array($method, $self->_methods)) {
+				$self->_setMethod($method, $params);
+			}
 
-		return $this->getResponse($method);
+			return $self->getResponse($method);
+		});
 	}
 }
 ?>
