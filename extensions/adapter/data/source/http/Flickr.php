@@ -2,300 +2,733 @@
 
 namespace li3_flickr\extensions\adapter\data\source\http;
 
+use \lithium\util\String;
+use \lithium\core\ConfigException;
+use \lithium\storage\Cache;
+use \lithium\storage\Session;
+
+
 /**
- * li3_flickr
+ * li3_Flickr
  *
  * Flickr API Datasource Wrapper extension for Lithium
  *
  *
  * @see \lithium\data\source\Http
  *
- * @link http://www.flickr.com/services/api/
+ * @link www.flickr.com/services/api/
  */
-
-use lithium\action\Controller;
 
 class Flickr extends \lithium\data\source\Http {
 
+
 	/**
-	 * List of predined exceptional methods and their corresponding HTTP method and path.
-	 * You can pre(or after) define api methods in this variable, otherwise it'll be automaticly created and will be holded in this variable.
+	 * Classes required
 	 *
+	 * @access protected
 	 * @var array
 	 */
-	protected $_methods = array(
-
+	protected $_classes = array(
+		'service' 			=> 'lithium\net\http\Service',
+		'session'			=> 'lithium\storage\Session',
+		'cache'				=> 'lithium\storage\Cache',
+		'entity' 			=> 'lithium\data\entity\Document',
+		'set' 				=> 'lithium\data\collection\DocumentSet',
+		'configException'	=> 'lithium\core\ConfigException'
 	);
 
 	/**
-	 * Holds unserialized last Flickr response & error
+	 * List of defined methods and their corresponding HTTP method and path.
+	 * You can pre(or after) define api methods in this variable with setMethod() function,
+	 * otherwise it'll be created from Flickr API with magic (if exists) and will be holded in this variable.
 	 *
-	 * @var Array
+	 * @access protected
+	 * @var array
 	 */
-	public $last = array('response', 'error', 'unserialized', 'params');
+	protected $_methods = array(
+		'flickr.auth.getToken' => array(
+			'params'	=> array('method', 'api_key', 'frob', 'api_sig'),
+			'method'	=> 'post',
+		    'domain'	=> 'api',
+		    'path'		=> '/services/{:service}',
+		    'login'		=> 0,
+		    'sign'		=> 1,
+		    'perms'		=> 0
+		),
+	);
+
+	/**
+	 * Host configurations
+	 * You can access them with getDomain() function.
+	 *
+	 * @access protected
+	 * @var array
+	 */
+	protected $_domains = array(
+		'api' 			=> 'api.flickr.com',
+		'secure' 		=> 'secure.flickr.com/services/{:service}',
+
+		'auth'			=> 'http://flickr.com/services/{:service}/{:authParams}',
+		'after_upload'	=> 'http://www.flickr.com/photos/upload/edit',
+		'short_url'		=> 'http://flic.kr/p/{:base58PhotoId}',
+		'photo'			=> 'http://farm{:farm}.static.flickr.com/{:server}/{:id}_{:secret}_{:size}.{:extension}',
+		'profile'		=> 'http://www.flickr.com/people/{:userId}',
+		'buddyicon'		=> 'http://farm{:icon-farm}.static.flickr.com/{:icon-server}/buddyicons/{:nsid}.jpg',
+		'photo_page' 		=> 'http://www.flickr.com/photos/{:userId}/{:photo-id}',
+		'photosets'		=> 'http://www.flickr.com/photos/{:userId}',
+		'photoset'		=> 'http://www.flickr.com/photos/{:userId}/sets/{:photoset-id}'
+	);
+
+	/**
+	 * Flickr Api permission levels
+	 *
+	 * @access protected
+	 * @var Array
+	*/
+	protected $_permissions = array(
+		'default' => 0,
+		'read' => 1,
+		'write' => 2,
+		'delete' => 3
+	);
+
+
+	/**
+	 * The Connection
+	 *
+	 * @access public
+	 * @var object
+	*/
+	public $connection;
+
+	/**
+	 * Some important response codes for  purposes
+	 *
+	 * @access protected
+	 * @var array
+	 */
+	protected $_codes = array(
+		96	=> 'Invalid signature',
+		97	=> 'Missing signature',
+		98	=> 'Login failed / Invalid auth token',
+		99	=> 'User not logged in / Insufficient permissions',
+		100	=> 'Invalid API Key',
+		105	=> 'Service currently unavailable',
+		112	=> 'Method {:method} not found',
+		116	=> 'Bad URL found',
+	);
+
 
 	/**
 	 * Constructor
 	 *
-	 * You should override the api_key and api_secret in your application's connection settings via Connection::add(). Default api parameters only for testing.
-	 * Be aware, using defaults is not good for your application's security and privacy.
-	 *
 	 * @param array $config
-	 * @return void
 	 */
 	public function __construct(array $config = array()) {
 		$defaults = array(
+			'host'				=> $this->_domains['api'],
 			'scheme'			=> 'http',
-			'callback_url'		=> null,
-			'host'				=> 'api.flickr.com',
-			'auth_url'			=> 'http://flickr.com/services/auth/',
-			'api_service'		=> '/services/rest/',
-			'api_key'			=> 'b039bb83c2a8e1a59cb093cdd889d230',
-			'api_secret'		=> '71403385dd9bc04a',
-			'api_sig'			=> null,
-			'perms'				=> 'delete',
-			'api_method'		=> 'GET',
-			'permission_code'	=> '99',
-			'auto_auth'			=> true,
+			'method'			=> 'post',
+			'service'			=> 'rest',
+			'format'			=> 'json',
+			'method_prefix'		=> 'flickr',
 			'encoding'			=> 'UTF-8',
 			'socket'     		=> 'Context',
-			'unserialize'		=> 'php'
+			'lazy_method_fetch'	=> true,
+			'skip_method_fetch'	=> false,
+			'skip_method_check'	=> false,
+			'load_methods'		=> array(),
+			'session'			=> 'default',
+			'cache'				=> 'default',
+			'cache_expire'		=> '+2 days'
 		);
-		$config += $defaults;
+
+ 		$config += $defaults;
+
+		if(!isset($config['api_secret'])) {
+			throw new ConfigException("Api key is not configured.");
+		}
+		if(!isset($config['api_key'])) {
+			throw new ConfigException("Api secret is not configured.");
+		}
+
 		parent::__construct($config);
 	}
 
+
 	/**
-	 * Filtering required variables for authentication signing, and returns them.
+	 * Initialize
 	 *
 	 * @access protected
-	 * @param array $params
-	 * @return array $authParams
-	*/
-	protected function _filterAuthParams($params = array()) {
-		$params += $this->connection->_config;
-		$authParams = array(
-			'api_key' => empty($params['api_key']) ? $this->connection->_config['api_key'] : $params['api_key'],
-			'perms' => empty($params['perms']) ? $this->connection->_config['perms'] : $params['perms'],
-			'extra' => empty($params['extra']) ? $this->connection->_config['extra'] : $params['extra']
-		);
-		ksort($authParams);
-		return $authParams;
-	}
+	 */
+	protected function _init() {
+	    parent::_init();
 
-	/**
-	 * Makes flickr compatible md5 hashed api sign which is required for getting permission (and frob).
-	 *
-	 * @access public
-	 * @param array $params
-	 * @return string $apiSig
-	*/
-	public function makeSign($params = array()) {
-		$apiSig = empty($params['api_secret']) ? $this->connection->_config['api_secret'] : $params['api_secret'];
-		$authParams = $this->_filterAuthParams($params);
-		ksort($authParams);
-		foreach($authParams as $key => $value) {
-			$apiSig .= $key . $value;
+	    $this->_checkAdapter('Session', $this->connection->_config['session']);
+	    $this->_checkAdapter('Cache', $this->connection->_config['cache']);
+
+		$cachedMethods = Cache::read($this->connection->_config['cache'], "li3_Flickr_methods");
+		if($cachedMethods && !empty($cachedMethods)) {
+			foreach($cachedMethods as $method => $params) {
+				$this->setMethod($method, $params);
+			}
 		}
-		echo "{$apiSig}\n <br />";
-		return $this->last['params']['api_sig'] = md5($apiSig);
+
+	    if(!$this->connection->_config['skip_method_fetch']) {
+    		$this->setMethod('flickr.reflection.getMethodInfo', array(
+	    		'params' => array('method_name', 'api_key')
+			));
+	    	if(!$this->connection->_config['lazy_method_fetch']) {
+	    		$this->_fetchAllMethods();
+    		}
+	    }
 	}
 
 	/**
-	 * Makes flickr auth url for getting permission.
-	 * You can override settings and permission (i.e: 'perms' => 'delete') level with passing $params argument, otherwise it'll use connection defaults.
-	 *
-	 * @access public
-	 * @param array $params
-	 * @return string $url
-	*/
-	public function getAuthUrl($params = array()) {
-		$params += $this->connection->_config;
-		$authUrl = $params['auth_url'];
-		$authParams = $this->_filterAuthParams($params);
-		$apiSig = $this->makeSign($authParams);
-		foreach($authParams as $key => $value) {
-			$authParams[] = urlencode($key) . '=' . urlencode($value);
-			unset($authParams[$key]);
-		}
-		$url = $authUrl . '?'. implode('&', $authParams) . '&api_sig=' . $apiSig;
-		return $url;
-	}
-
-	/**
-	 * Checks for errors at the end of service call.
-	 * If it'll find error, putting them $this->last['error'] variable as array.
-	 * If permission is not enough to operate action, will return permission denied string.
+	 * Checks the required storage adapter setting is configured properly.
 	 *
 	 * @access protected
-	 * @param mixed $response
-	 * @return mixed
-	*/
-	protected function _checkForErrors($response = false) {
-		$config = $this->connection->_config;
-		if($config['unserialize'] != 'php' || !isset($response['stat']) || $response['stat'] == 'ok') {
-			return $response;
+	 * @param string $storage
+	 * @param string $name
+	 * @return bool
+	 */
+	protected function _checkAdapter($storage = false, $name = false) {
+
+		if($storage === false || $name === false) {
+			return false;
 		}
 
-		if(isset($response['message'])) {
-			$this->last['error'] = $response['message'];
+		switch($storage) {
+			case 'Session':
+				$check = Session::check('li3_Flickr', array('name' => $name));
+				$permission = $this->_permissions['default'];
+				$write = function() use($permission, $name) {
+					return Session::write('li3_Flickr', array(
+						'permission' 			=> $permission,
+						'frob' 					=> null,
+						'auth_token'			=> null,
+						'user'					=> null
+					), array('name' => $name));
+				};
+			break;
+
+			case 'Cache':
+				$check = Cache::read($name, 'li3_Flickr');
+				$expire = $this->connection->_config['cache_expire'];
+				$write = function() use($name, $expire) {
+					return Cache::write($name, 'li3_Flickr', array('status' => 'ok'), $expire);
+				};
+			break;
+
+			default:
+				return false;
+			break;
 		}
 
-		if(isset($response['code']) && $response['code'] == $config['permission_code']) {
-			return 'permission_denied';
+		$params = compact('storage', 'name');
+		return $this->_filter(__METHOD__, $params, function($self, $params) use($check, $write) {
+			extract($params);
+			if(!$check) {
+				if(!$write()) {
+					throw new ConfigException(" '{$name}' named {$storage} adapter is not properly configured.");
+				}
+			}
+			return true;
+		});
+	}
+
+	/**
+	 * Checks the current permission level is enough
+	 *
+	 * @access public
+	 * @param mixed $level
+	 * @param array $config
+	 * @return bool
+	 */
+	 public function checkPermission($level = 0, $config = array()) {
+
+	 	if(is_numeric($level)) {
+	 		$level = !$level ? 0 : $level;
+	 	}
+	 	
+	 	if(is_string($level)) {
+	 		$level = empty($this->_permissions[$level]) ? 0 : $this->_permissions[$level];
+	 	}
+
+	 	$config += $this->connection->_config;
+	 	$session = Session::read('li3_Flickr', array('name' => $config['session']));
+	 	$permissions = $this->_permissions;
+
+	 	$params = compact('level', 'permissions');
+	 	return $this->_filter(__METHOD__, $params, function($self, $params) use($session) {
+	 		extract($params);
+
+	 		if(!isset($params['level']) || !$session || empty($session)) {
+	 			return false;
+	 		}
+
+	 		$currentPermission = (integer) $session['permission'];
+	 		
+	 		if($currentPermission < $level) {
+	 			return false;
+	 		}
+	 		
+	 		if($level > 0 && (empty($session['auth_token']) || !$session['auth_token'])) {
+	 			return false;
+	 		}
+
+	 		return true;
+	 	});
+	 }
+
+	/**
+	 * Checks the current permission level is enough for the specific method
+	 *
+	 * @access public
+	 * @param string $by
+	 * @param array $params
+	 * @return bool
+	 */
+	 public function checkPermissionByMethod($method = false, array $params = array()) {
+	 	
+	 	if($method === false || !$this->checkMethod($method)) {
+	 		return false;
+	 	}
+	 	
+	 	$params = $params + $this->_methods[$method];
+	 	return $this->_filter(__METHOD__, $params, function($self, $params) use($params, $method) {
+	 		$perms = empty($params['perms']) || !$params['perms'] ? 0 : $params['perms'];
+			
+	 		if(!$self->checkPermission($perms)) {
+	 			return false;
+	 		}
+			
+	 		return true;
+	 	});
+	 }
+
+	/**
+	 * Checks the api method is defined, and if not defines it from method cache or Flickr api
+	 *
+	 * @access public
+	 * @param string $method
+	 * @return bool
+	 */
+	public function checkMethod($method = null) {
+
+		if($this->connection->_config['skip_method_check']) {
+			return true;
+		}
+
+		if($method) {
+			if(isset($this->_methods[$method])) {
+				return true;
+			}
+
+			if(!$this->connection->_config['skip_method_fetch']) {
+				$response = $this->_fetchMethod($method);
+
+				if(!$response) {
+					return false;
+				}
+
+				$response = $this->connection->last->response;
+				$domains = $this->_domains;
+
+				$params = array();
+				return $this->_filter(__METHOD__, $params, function($self, $params) use($domains, $response) {
+					return $self->setMethod($response->method->name, array(
+						'login'	=> $response->method->needslogin,
+						'sign'	=> $response->method->needssigning,
+						'perms'	=> $response->method->requiredperms,
+						'params' => array_map(function($param) {
+							return isset($param->name) ? $param->name : false;
+						}, $response->arguments->argument)
+					));
+				});
+			}
 		}
 		return false;
 	}
 
 	/**
-	 * Setting service response format depending on $this->connection->_config['unserialize']
-	 * Avaible options are json, simplexml, rest, php serialize(recommended)
+	 * Removes the method cache
 	 *
 	 * @access protected
-	 * @return mixed
-	*/
-	protected function _setResponseFormat() {
-		switch($this->connection->_config['unserialize']) {
-			case 'json':
-				return array('format' => 'json', 'nojsoncallback' => 1);
-				break;
-			case 'simplexml':
-				return array();
-				break;
-			case 'rest':
-				return array();
-				break;
-			case 'php':
-				return array('format' => 'php_serial');
-				break;
-			default:
-				$this->connection->_config['unserialize'] = 'php';
-				return array('format' => 'php_serial');
-		}
+	 * @param string $method
+	 * @return object, bool
+	 */
+	public function clearMethods() {
+		return Cache::delete($this->connection->_config['cache'], 'li3_Flickr_methods');
+	}
+	
+	/**
+	 * Removes the authentication session
+	 *
+	 * @access protected
+	 * @param string $method
+	 * @return object, bool
+	 */
+	public function clearSession() {
+		return Session::delete('li3_Flickr', array('name' => $this->connection->_config['session']));
 	}
 
 	/**
-	 * Converting service response format depending on $this->connection->_config['unserialize']
-	 * Avaible options are json, simplexml, rest, php serialize(recommended)
-	 *
-	 * @access public
-	 * @param mixed $response
-	 * @return mixed
-	*/
-	public function filterResponse($response = false) {
-		return $this->_filter(__METHOD__, $response, function($self, $response) {
-			switch($this->connection->_config['unserialize']) {
-				case 'json':
-					return json_decode($response);
-					break;
-				case 'simplexml':
-					return simplexml_load_string($response);
-					break;
-				case 'rest':
-					return $response;
-					break;
-				case 'php':
-					return unserialize($response);
-					break;
-				default:
-					return $response;
-			}
-		});
-	}
-
-	/**
-	 * Organizing and encoding request params
+	 * Fetches the method info from api
 	 *
 	 * @access protected
-	 * @param array $params
-	 * @return array $encoded_params
+	 * @param string $method
+	 * @return object, bool
 	*/
-	protected function _setParams($params = array()) {
-		$params = array_merge(array(
-			'api_key'		=> $this->connection->_config['api_key'],
-			'perms'			=> $this->connection->_config['perms']
-		), $params);
-		$this->last['params'] = $params = $this->_setResponseFormat() + $params;
-
-		$encoded_params = array();
-		foreach ($params as $key => $value) {
-			if(is_string($value) || is_numeric($value)) {
-				$encoded_params[] = urlencode($key) . '=' . urlencode($value);
-			}
-		}
-
-		return $encoded_params;
-	}
-
-	/**
-	 * Sets the service call method when it's not in $_methods variable.
-	 *
-	 * @access protected
-	 * @param array $params
-	 * @return array $encoded_params
-	*/
-	protected function _setMethod($method = null, $params = array()) {
+	protected function _fetchMethod($method = null) {
 		if(!$method) {
 			return false;
 		}
 
-		$params = $this->_setParams($params);
+		$response = $this->_request('flickr.reflection.getMethodInfo', array(
+			'query' => array(
+				'method_name' => $method,
+				'format' => 'json'
+			),
+			'options' => array('format' => 'json')
+		)) ? $this->connection->last->response : false;
 
-		$path = $this->connection->_config['api_service'] . '?method=flickr.' . str_replace('_', '.', $method);
-		$path .= empty($params) ? '' : '&'. implode('&', $params);
-
-		$this->_config['methods'][$method] = $this->connection->_config['methods'][$method] = $this->_methods[$method] = array(
-			'path' => empty($params['path']) ? $path : $params['path'],
-			'method' => empty($params['api_method']) ? $this->connection->_config['api_method'] : $params['api_method']
-		);
+		return isset($response->method) ? $response : false;
 	}
 
 	/**
-	 * Controlling the hole api request and returns response.
+	 * Fetches all method infos from api
 	 *
 	 * @access protected
-	 * @param array $params
-	 * @return array $encoded_params
 	*/
-	public function getResponse($method = null) {
-		if(!$method) {
+	protected function _fetchAllMethods() {
+
+		$response = $this->reflection_getMethods(array(), array('format' => 'json'));
+
+		if(!$response) {
 			return false;
 		}
-		return $this->_filter(__METHOD__, $method, function($self, $method) {
-			$response = $self->last['unserialized'] = parent::__call($method, array());
-			$response = $self->_filterResponse($response);
-			if($this->_checkForErrors($response)) {
-				return $self->last['response'] = $response;
-			}
+
+		$methods = empty($this->connection->_config['load_methods']) ? array_map(function($method) {
+			return $method->_content;
+		}, $response->methods->method) : $this->connection->_config['load_methods'];
+
+		$this->connection->_config = $currentSettings + $this->connection->_config;
+
+		if(empty($methods)) {
 			return false;
-		});
+		}
+
+		foreach($methods as $method) {
+			$this->checkMethod($method);
+		}
+
+		return true;
 	}
 
 	/**
-	 * Catches methods.
-	 * If it's not a class method or defined api method (which is stored $_methods variable) it'll convert the method as a API call, end after that it  will request it
-	 * If returns false assigning error to $last
-	 * If returns (string) permission_requeired than you should get permission. Check AuthController::get_auth()
+	 * Defines a new method
 	 *
 	 * @param string $method
 	 * @param array $params
-	 * @return array,bool
+	 * @return array, bool
 	 */
-	public function __call($method, Array $params = array()) {
-		if(is_callable($this, $method)) {
-			return $this->invokeMethod($this, $method);
+	public function setMethod($method = null, array $params = array()) {
+		$config = $this->connection->_config;
+		$return = !$method ? false : $this->_methods[$method] = $params += array(
+			'method' => 'post',
+			'domain' => 'api',
+			'params' => array('api_key'),
+			'path'	 => '/services/{:service}',
+			'login'	 => 0,
+			'sign'	 => 0,
+			'perms'	 => 0
+		);
+
+		if(isset($params['params']) && in_array('frob', $params['params'])) {
+			//flickr reflection bug
+			$return['sign'] = 1;
 		}
 
-		return $this->_filter(__METHOD__, $params, function($self, $params) use($method) {
-			$params = !empty($params[0]) ? $params[0] : array();
-			$params = !is_array($params) ? array($params) : $params;
+		$cachedMethods = Cache::read($config['cache'], "li3_Flickr_methods");
+		$cachedMethods = empty($cachedMethods) ? array() : $cachedMethods;
+		$cachedMethods[$method] = $return;
+		Cache::write($config['cache'], "li3_Flickr_methods", $cachedMethods, $config['cache_expire']);
+		return $return;
+	}
 
-			if(!in_array($method, $self->_methods)) {
-				$self->_setMethod($method, $params);
+	/**
+	 * Entities
+	 *
+	 * @access public
+	 * @param object $class
+	 * @return void
+	 */
+	public function entities($class = null) {}
+
+	/**
+	 * Describe data source.
+	 *
+	 * @param string $entity
+	 * @param string $meta
+	 * @return void
+	 */
+	public function describe($describefentity = null, array $meta = array()) {}
+
+
+	/**
+	 * Returns replaced proper params in the specified domain
+	 *
+	 * @access public
+	 * @param array $params, string $domain
+	 * @return string
+	*/
+	public function getDomain($params = array(), $domain = 'api') {
+		$params = $domain == 'photo' ? (array) $params + array(
+			'extension' => 'jpg',
+			'size'		=> 'b'
+		) : (array) $params;
+
+		if(!$domain || empty($params) || !isset($this->_domains[$domain])) {
+			return false;
+		}
+		return String::insert($this->_domains[$domain], $params);
+	}
+
+	/**
+	 * Makes flickr compatible md5 hashed api sign which is required for getting token and frob.
+	 *
+	 * @access public
+	 * @param array $params
+	 * @return string $apiSig
+	*/
+	public function makeSign(array $params = array(), $options = array()) {
+		$options = empty($options) ? $this->connection->_config : $options + $this->connection->_config;
+		 if(empty($options['api_secret'])) {
+			return false;
+		}
+
+		ksort($params);
+		$apiSig = $options['api_secret'];
+		foreach($params as $param => $value) {
+			$apiSig .= $param . $value;
+		}
+
+		return $this->connection->last->api_sig = md5($apiSig);
+	}
+
+	/**
+	 * Makes flickr auth url for getting permission.
+	 * You can override settings a with passing $params key otherwise it'll use connection defaults.
+	 *
+	 * @access public
+	 * @param string $permissions
+	 * @param array $params
+	 * @return string
+	*/
+	public function getAuthUrl($permission = 'read', $params = array()) {
+		$authParams = $params = array(
+			'perms' => $permission
+		) + $this->_filterParams($params, array('api_key', 'perms', 'api_sig', 'extra'));
+		$apiSig = $this->makeSign($params);
+		$authParams['api_sig'] = $apiSig;
+		ksort($authParams);
+		foreach($authParams as $key => $value) {
+			$authParams[] = urlencode($key) . '=' . urlencode($value);
+			unset($authParams[$key]);
+		}
+
+		$sessionAdapter = array('name' => $this->connection->_config['session']);
+
+		if(!isset($params['perms']) || !in_array($params['perms'], $this->_permissions)) {
+			$params['perms'] = 'read';
+		}
+
+		$params = array(
+			'service'		=> 'auth',
+			'authParams'	=> '?'. implode('&', $authParams)
+		);
+
+		return $this->_filter(__METHOD__, $params, function($self, $params) {
+			return $self->getDomain($params, 'auth');
+		});
+	}
+
+
+	/**
+	 * Preparares the session and token for given frob.
+	 *
+	 * @access public
+	 * @param string $frob
+	 * @return bool
+	*/
+	public function afterAuth($frob = null) {
+		$sessionAdapter = array('name' => $this->connection->_config['session']);
+		$currentSession = Session::read('li3_Flickr', $sessionAdapter);
+
+		$params = compact('sessionAdapter', 'currentSession', 'frob');
+		$permissions = $this->_permissions;
+
+		$this->_filter(__METHOD__, $params, function($self, $params) use($permissions) {
+
+			extract($params);
+
+			if(!$frob || !$sessionAdapter || !$currentSession) {
+				return false;
 			}
 
-			return $self->getResponse($method);
+			$response = $self->auth_getToken(array(
+				'frob'	=> $frob
+			), array('format' => 'json'));
+			
+			if(!isset($response->auth)) {
+				return false;
+			}
+
+			$response = $response->auth;
+			$permission = (bool) !$response->perms->_content ? 1 : $permissions[$response->perms->_content];
+
+			return Session::write('li3_Flickr', array(
+				'permission'	=> $permission,
+				'frob'			=> $frob,
+				'auth_token'	=> $response->token->_content,
+				'user'			=> $response->user
+			) + $currentSession, $sessionAdapter);
 		});
+	}
+
+	/**
+	 * Filtering the sended params
+	 *
+	 * @access protected
+	 * @param array $params, array $against
+	 * @return array
+	*/
+	protected function _filterParams($params = array(), $against = array()) {
+		extract($this->connection->_config);
+		$params += compact('api_key', 'api_secret', 'format');
+
+		return array_intersect_key($params, array_fill_keys($against, null));
+	}
+
+	/**
+	 * Key function that organazing params for request, makes API call and returns response for the configured format.
+	 *
+	 * @access protected
+	 * @param array $apiMethod, array $requestParams
+	 * @return object
+	*/
+	protected function _request($apiMethod = null, $requestParams = array()) {
+
+		if(!$apiMethod) {
+			return false;
+		}
+		
+		extract($this->_methods[$apiMethod], EXTR_OVERWRITE);
+		extract($requestParams);
+
+		if(!isset($query) || !$this->checkPermissionByMethod($apiMethod, $query)) {
+			return false;
+		}
+
+		$method = isset($this->_methods[$apiMethod]['method']) ? $this->_methods[$apiMethod]['method'] : false;
+		$domain = isset($domain) ? $domain : $this->_domains['api'];
+		$path = isset($path) ? $path : '/services/{:service}';
+
+		$params = isset($params) ? $params : array('api_key');
+		$options = isset($options) ? (
+			$options + array('method' => $method) + $this->connection->_config
+		) : $this->connection->_config;
+
+		$method = $options['method'];
+
+		if(!empty($options['format']) && $options['format']!='xml') {
+			$params[] = 'format';
+			if($options['format'] == 'json') {
+				$params[] = 'nojsoncallback';
+				$data['nojsoncallback'] = 1;
+			}
+		}
+
+		$data['method'] = $apiMethod;
+		$data += $this->_filterParams($query, $params);
+
+		if($this->_methods[$apiMethod]['sign']) {
+			$session = Session::read('li3_Flickr', array('name' => $options['session']));
+			if($session && !empty($session['auth_token'])) {
+				$params[] = 'auth_token';
+				$data['auth_token'] = $session['auth_token'];
+			}
+
+			$data['api_sig'] = $this->makeSign($data, $options);
+			$params[] = 'api_sig';
+		}
+
+		$options['host'] = $this->getDomain($options, $domain);
+		$path = String::insert($path, $options);
+
+		$this->connection = $this->_instance('service', $options);
+
+		$response = $this->connection->{$method}($path, $data, $options);
+
+		$params = compact('data', 'options', 'path');
+		$filter = $this->_filter(__METHOD__, $params, function($self, $params) use($response) {
+
+			$bare = $response;
+
+			$response = isset($response->body[0]) ? $response->body[0] : $response;
+			switch($params['options']['format']) {
+
+				case 'json' :
+					$return = json_decode($response);
+				break;
+
+				case 'php_serial' :
+					$return = unserialize($response);
+				break;
+
+				case 'xml' :
+					$return = simplexml_load_string($response);
+				break;
+
+				default :
+					$return = $response;
+				break;
+			}
+
+			$return->bare = $bare;
+			return $return;
+		});
+
+		return $this->connection->last->response = $filter;
+	}
+
+
+	/**
+	 * Catches all context method calls and if it's proper to call, starting the API request process. Otherwise invoking the method.
+	 *
+	 * @access public
+	 * @param string $method
+	 * @param array $params
+	 * @return mixed
+	 */
+	public function __call($method, Array $params = array()) {
+		$flickrPrefix = $this->connection->_config['method_prefix'];
+		$apiMethod = preg_match("/{$flickrPrefix}/", $method) ? '' : "{$flickrPrefix}.";
+		$apiMethod .= str_replace('_', '.', $method);
+
+		$query = isset($params[0]) ? $params[0] : array();
+		$options = isset($params[1]) ? $params[1] + $this->connection->_config : $this->connection->_config;
+
+		if($options['skip_method_check'] || $this->checkMethod($apiMethod)) {
+			$params = compact('query','options');
+
+			return  $this->_filter(__METHOD__, $params, function($self, $params) use($apiMethod) {
+				return $self->invokeMethod('_request', array($apiMethod, $params));
+			});
+		}
+
+		return $this->connection->invokeMethod($method, $params);
 	}
 }
 ?>
