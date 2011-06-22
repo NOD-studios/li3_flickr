@@ -100,24 +100,7 @@ class Flickr extends \lithium\data\source\Http {
 	 * @var object
 	*/
 	public $connection;
-
-	/**
-	 * Some important response codes for  purposes
-	 *
-	 * @access protected
-	 * @var array
-	 */
-	protected $_codes = array(
-		96	=> 'Invalid signature',
-		97	=> 'Missing signature',
-		98	=> 'Login failed / Invalid auth token',
-		99	=> 'User not logged in / Insufficient permissions',
-		100	=> 'Invalid API Key',
-		105	=> 'Service currently unavailable',
-		112	=> 'Method {:method} not found',
-		116	=> 'Bad URL found',
-	);
-
+	
 
 	/**
 	 * Constructor
